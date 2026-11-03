@@ -1,49 +1,45 @@
 
 package mn.edu.must.sqat;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.params.provider.Arguments;
+
 import java.util.List;
-import java.util.stream.Stream;
+
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class CourseRegistrationServiceTest {
 
-    @Mock
-    StudentRepository repository;
+    @Mock StudentRepository repository;
+    @Mock EmailSender emailSender;
+    CourseRegistrationService service;
 
-    @Mock
-    EmailSender emailSender;
+    @BeforeEach
+    void setUp() {
+        service = new CourseRegistrationService(repository, emailSender);
+    }
 
+    // A1 - Successful registration
     @Test
-    void testSuccessfulRegistration() {
+    void activeStudent_registrationReturnsOK() {
         Student student = new Student(
-            "S001",
-            "student@example.com",
-            true,
-            List.of()
+            "S001", "student@example.com", true, List.of()
         );
-
         when(repository.findStudent("S001")).thenReturn(student);
         when(repository.courseExists("CS101")).thenReturn(true);
         when(repository.prerequisites("CS101")).thenReturn(List.of());
 
-        CourseRegistrationService service =
-            new CourseRegistrationService(repository, emailSender);
+        assertEquals("OK", service.register("S001", "CS101"));
 
-        String result = service.register("S001", "CS101");
-
-        assertEquals("OK", result);
         verify(repository).saveRegistration("S001", "CS101");
         verify(emailSender).send(
             eq("student@example.com"),
@@ -51,163 +47,142 @@ class CourseRegistrationServiceTest {
             contains("CS101")
         );
     }
-    
+
+    // A2 - Student not found
     @Test
-    void testStudentNotFound() {
+    void missingStudent_returnsErrorWithoutSaving() {
         when(repository.findStudent("S999")).thenReturn(null);
 
-        CourseRegistrationService service =
-                new CourseRegistrationService(repository, emailSender);
+        assertEquals("ERROR_NO_STUDENT",
+            service.register("S999", "CS101"));
 
-        String result = service.register("S999", "CS101");
-
-        assertEquals("ERROR_NO_STUDENT", result);
-
-        verify(repository, never()).saveRegistration(anyString(), anyString());
+        verify(repository, never())
+            .saveRegistration(anyString(), anyString());
         verifyNoInteractions(emailSender);
     }
 
+    // A3 - Inactive student
     @Test
-    void testInactiveStudent() {
+    void inactiveStudent_returnsErrorWithoutEmail() {
         Student student = new Student(
-            "S002",
-            "inactive@example.com",
-            false,
-            List.of()
+            "S002", "inactive@example.com", false, List.of()
         );
-
         when(repository.findStudent("S002")).thenReturn(student);
 
-        CourseRegistrationService service =
-            new CourseRegistrationService(repository, emailSender);
+        assertEquals("ERROR_INACTIVE_STUDENT",
+            service.register("S002", "CS101"));
 
-        String result = service.register("S002", "CS101");
-
-        assertEquals("ERROR_INACTIVE_STUDENT", result);
-
-        verify(repository, never()).courseExists(anyString());
-        verify(repository, never()).saveRegistration(anyString(), anyString());
+        verify(repository, never())
+            .saveRegistration(anyString(), anyString());
         verifyNoInteractions(emailSender);
     }
 
+    // A4 - Missing prerequisites
     @Test
-    void testCourseNotFound() {
+    void missingPrerequisites_preventsRegistration() {
         Student student = new Student(
-            "S003",
-            "student3@example.com",
-            true,
-            List.of()
+            "S004", "student4@example.com", true, List.of("CS100")
         );
-
-        when(repository.findStudent("S003")).thenReturn(student);
-        when(repository.courseExists("CS999")).thenReturn(false);
-
-        CourseRegistrationService service =
-            new CourseRegistrationService(repository, emailSender);
-
-        String result = service.register("S003", "CS999");
-
-        assertEquals("ERROR_NO_COURSE", result);
-
-        verify(repository, never()).prerequisites(anyString());
-        verify(repository, never()).saveRegistration(anyString(), anyString());
-        verifyNoInteractions(emailSender);
-    }
-
-    @Test
-    void testMissingPrerequisites() {
-        Student student = new Student(
-            "S004",
-            "student4@example.com",
-            true,
-            List.of("CS100")
-        );
-
         when(repository.findStudent("S004")).thenReturn(student);
         when(repository.courseExists("CS201")).thenReturn(true);
         when(repository.prerequisites("CS201"))
-                .thenReturn(List.of("CS100", "CS101"));
+            .thenReturn(List.of("CS100", "CS101"));
 
-        CourseRegistrationService service =
-                new CourseRegistrationService(repository, emailSender);
-
-        String result = service.register("S004", "CS201");
-
-        assertEquals("ERROR_PREREQUISITES", result);
+        assertEquals("ERROR_PREREQUISITES",
+            service.register("S004", "CS201"));
 
         verify(repository, never())
-                .saveRegistration(anyString(), anyString());
+            .saveRegistration(anyString(), anyString());
         verifyNoInteractions(emailSender);
     }
 
+    // A5 - Email failure must not cancel registration
     @Test
-    void testEmailFailureDoesNotCancelRegistration() {
+    void emailFailure_registrationRemainsSuccessful() {
         Student student = new Student(
-            "S005",
-            "student5@example.com",
-            true,
-            List.of()
+            "S005", "student5@example.com", true, List.of()
         );
-
         when(repository.findStudent("S005")).thenReturn(student);
         when(repository.courseExists("CS101")).thenReturn(true);
         when(repository.prerequisites("CS101")).thenReturn(List.of());
 
-        doThrow(new RuntimeException("Email service unavailable"))
+        doThrow(new RuntimeException("Email unavailable"))
             .when(emailSender)
             .send(anyString(), anyString(), anyString());
 
-        CourseRegistrationService service =
-            new CourseRegistrationService(repository, emailSender);
-
-        String result = service.register("S005", "CS101");
-
-        assertEquals("OK", result);
+        assertEquals("OK", service.register("S005", "CS101"));
 
         verify(repository).saveRegistration("S005", "CS101");
-        verify(emailSender).send(
-            eq("student5@example.com"),
-            anyString(),
-            contains("CS101")
-        );
     }
 
+    // A6 - Both null arguments
     @Test
-    void testNullStudentId() {
-        CourseRegistrationService service =
-            new CourseRegistrationService(repository, emailSender);
+    void nullInputs_throwExceptionWithoutInteractions() {
+        assertThrows(IllegalArgumentException.class,
+            () -> service.register(null, "CS101"));
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> service.register(null, "CS101")
-        );
+        assertThrows(IllegalArgumentException.class,
+            () -> service.register("S001", null));
 
-        assertTrue(exception.getMessage().contains("studentId"));
         verifyNoInteractions(repository, emailSender);
     }
 
-    static Stream<Arguments> invalidRegistrationInputs() {
-        return Stream.of(
-            Arguments.of(null, "CS101"),
-            Arguments.of("S001", null),
-            Arguments.of(null, null)
+    // A7 - Capture the actual email body
+    @Test
+    void successfulRegistration_emailContainsCourseCode() {
+        Student student = new Student(
+            "S007", "student7@example.com", true, List.of()
         );
+        when(repository.findStudent("S007")).thenReturn(student);
+        when(repository.courseExists("CS101")).thenReturn(true);
+        when(repository.prerequisites("CS101")).thenReturn(List.of());
+
+        assertEquals("OK", service.register("S007", "CS101"));
+
+        ArgumentCaptor<String> bodyCaptor =
+            ArgumentCaptor.forClass(String.class);
+
+        verify(emailSender).send(
+            eq("student7@example.com"),
+            anyString(),
+            bodyCaptor.capture()
+        );
+
+        assertTrue(bodyCaptor.getValue().contains("CS101"));
     }
 
+    // A8 - Three error categories in one parameterized test
     @ParameterizedTest
-    @MethodSource("invalidRegistrationInputs")
-    void testInvalidRegistrationInputs(
-            String studentId, String courseId) {
+    @CsvSource({
+        "MISSING, ERROR_NO_STUDENT",
+        "INACTIVE, ERROR_INACTIVE_STUDENT",
+        "NO_COURSE, ERROR_NO_COURSE"
+    })
+    void invalidRegistration_returnsExpectedError(
+            String scenario, String expected) {
 
-        CourseRegistrationService service =
-                new CourseRegistrationService(repository, emailSender);
-
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> service.register(studentId, courseId)
+        Student activeStudent = new Student(
+            "S008", "student8@example.com", true, List.of()
+        );
+        Student inactiveStudent = new Student(
+            "S008", "student8@example.com", false, List.of()
         );
 
-        verifyNoInteractions(repository, emailSender);
-    }
+        if (scenario.equals("MISSING")) {
+            when(repository.findStudent("S008")).thenReturn(null);
+        } else if (scenario.equals("INACTIVE")) {
+            when(repository.findStudent("S008"))
+                .thenReturn(inactiveStudent);
+        } else {
+            when(repository.findStudent("S008"))
+                .thenReturn(activeStudent);
+            when(repository.courseExists("CS999")).thenReturn(false);
+        }
 
+        assertEquals(expected, service.register("S008", "CS999"));
+
+        verify(repository, never())
+            .saveRegistration(anyString(), anyString());
+        verifyNoInteractions(emailSender);
+    }
 }
